@@ -1,6 +1,6 @@
 # Projeto - Cidades ESG Inteligentes · AguiaRadar
 
-> **Integrantes:** _Douglas Ferreira Giatti	(565712)_ · _Eduardo de Araujo Favaron (561769)_ · _Lorena Santos Comar (566420)_· _Kauany Soares Rodrigues Violin (564605)_ · _Marcos Pelizari (564883)_ 
+> **Integrantes:** _Douglas Ferreira Giatti (565712)_ · _Eduardo de Araujo Favaron (561769)_ · _Lorena Santos Comar (566420)_ · _Kauany Soares Rodrigues Violin (564605)_ · _Marcos Pelizari (564883)_
 
 O **AguiaRadar** é o backend (Java 17 + Spring Boot 3.3 + MongoDB) de uma plataforma de inovação voltada a ESG: colaboradores cadastram ideias, gestores as avaliam e priorizam (com apoio de IA) e a liderança acompanha projetos e indicadores (ROI, investimento, produtividade) em dashboards. Nesta fase o projeto recebeu práticas completas de DevOps: containerização, orquestração com Docker Compose e um pipeline de CI/CD no GitHub Actions com deploy automatizado em **staging** e **produção**.
 
@@ -22,8 +22,8 @@ flowchart LR
 
 ```bash
 # 1. Clonar e entrar na pasta
-git clone https://github.com/<SEU_USUARIO>/<SEU_REPO>.git
-cd <SEU_REPO>
+git clone https://github.com/Kawdevlops/aguiaradar-backend.git
+cd aguiaradar-backend
 
 # 2. Criar o arquivo de variáveis a partir do modelo
 cp .env.example .env          # Windows (PowerShell): copy .env.example .env
@@ -74,7 +74,7 @@ O arquivo está em [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
 | # | Job | Quando roda | O que faz |
 |---|-----|-------------|-----------|
 | 1 | **Build e testes** | PR e push na `main` | Instala o JDK 17 com cache do Maven, executa `mvn clean verify` (compilação + testes JUnit 5/Mockito), gera um resumo dos testes na página da execução e publica os relatórios e o `.jar` como artefatos. |
-| 2 | **Imagem Docker + teste do container** | PR e push na `main` | Constrói a imagem (com cache), sobe **API + MongoDB reais** com `docker compose --wait` e roda o `scripts/smoke-test.sh` (health, versão, login JWT, rota protegida com e sem token). Em push na `main`, publica a imagem em `ghcr.io/<usuario>/aguiaradar-backend:sha-<commit>`. |
+| 2 | **Imagem Docker + teste do container** | PR e push na `main` | Constrói a imagem (com cache), sobe **API + MongoDB reais** com `docker compose --wait` e roda o `scripts/smoke-test.sh` (health, versão, login JWT, rota protegida com e sem token). Em push na `main`, publica a imagem em `ghcr.io/kawdevlops/aguiaradar-backend:sha-<commit>`. |
 | 3 | **Deploy STAGING** | Push na `main` | Marca a imagem com a tag `staging`, dispara o *deploy hook* do Render passando a imagem exata do commit e aguarda até que `/actuator/info` responda com a nova versão; em seguida roda o smoke test na URL pública. |
 | 4 | **Deploy PRODUÇÃO** | Após staging OK + **aprovação manual** | Promove **a mesma imagem** já validada (tags `production` e `latest`), dispara o deploy hook de produção e roda o smoke test. |
 
@@ -91,7 +91,7 @@ Lógica e decisões:
 
 1. **MongoDB Atlas (gratuito):** crie um cluster M0, um usuário de banco e libere `0.0.0.0/0` em *Network Access*. Copie a connection string e use dois bancos diferentes: `.../aguiaradar_staging` e `.../aguiaradar_prod`.
 2. **Primeiro push:** envie o projeto para o GitHub. Os jobs 1 e 2 passam e publicam a imagem no GHCR (o job 3 falha porque ainda não há segredos — é esperado). Em *Seu perfil → Packages → aguiaradar-backend → Package settings*, mude a visibilidade para **Public** para que o Render consiga baixar a imagem.
-3. **Render (gratuito):** crie dois *Web Services* do tipo **Existing Image** com `ghcr.io/<usuario>/aguiaradar-backend:staging` e `...:production`, plano Free, e configure as variáveis:
+3. **Render (gratuito):** crie dois *Web Services* do tipo **Existing Image** com `ghcr.io/kawdevlops/aguiaradar-backend:staging` e `...:production`, plano Free, e configure as variáveis:
 
    | Variável | Staging | Produção |
    |---|---|---|
@@ -190,37 +190,72 @@ Estratégias adotadas:
 
 ## Prints do funcionamento
 
-> Substitua as imagens abaixo pelas suas capturas (lista completa em [`docs/prints/LEIA-ME.md`](docs/prints/LEIA-ME.md)).
+Evidências da execução **#2** do pipeline (commit `e73e8ab`), com deploy em staging e produção. Todos os arquivos estão em [`docs/prints/`](docs/prints/).
 
 **Links dos ambientes**
 
-- Staging: `https://<seu-servico-staging>.onrender.com/actuator/info`
-- Produção: `https://<seu-servico-producao>.onrender.com/actuator/info`
-- Execução do pipeline: `https://github.com/<SEU_USUARIO>/<SEU_REPO>/actions`
+| Ambiente | URL |
+|---|---|
+| Staging | https://aguiaradar-backend-staging.onrender.com/actuator/info |
+| Produção | https://aguiaradar-producao.onrender.com/actuator/info |
+| Pipeline (GitHub Actions) | https://github.com/Kawdevlops/aguiaradar-backend/actions |
+| Imagem Docker (GHCR) | `ghcr.io/kawdevlops/aguiaradar-backend` |
 
-**Pipeline completo**
-![Pipeline](docs/prints/01-pipeline-visao-geral.png)
+> Os serviços estão no plano gratuito do Render e "dormem" sem uso: o primeiro acesso pode levar cerca de 2 minutos para responder.
 
-**Build e testes**
+### Pipeline completo
+
+Os 4 jobs concluídos com sucesso: build e testes → imagem Docker → deploy staging → deploy produção.
+
+![Pipeline completo](docs/prints/01-pipeline-visao-geral.png)
+
+Resumo gerado pelo próprio pipeline: mesma versão `e73e8ab` em staging e produção e aprovação manual registrada.
+
+![Resumo dos deploys](docs/prints/09-resumo-deploys.png)
+
+### Build e testes automatizados
+
+Compilação com Maven e execução dos testes (15 testes, 0 falhas).
+
 ![Build e testes](docs/prints/02-build-testes.png)
 
-**Imagem Docker + smoke test do container**
-![Docker](docs/prints/03-docker-smoke.png)
+### Imagem Docker e teste do container
 
-**Deploy em staging**
+Build da imagem, subida de API + MongoDB com Docker Compose, smoke test e publicação no GHCR.
+
+![Imagem Docker](docs/prints/03-docker-smoke.png)
+
+### Deploy em staging
+
 ![Deploy staging](docs/prints/04-deploy-staging.png)
 
-**Aprovação e deploy em produção**
-![Aprovação](docs/prints/05-aprovacao-producao.png)
+### Aprovação manual e deploy em produção
+
+A produção só é implantada após aprovação no GitHub Environment `production`. A tela também mostra o resumo dos testes automatizados.
+
+![Aprovação para produção](docs/prints/05-aprovacao-producao.png)
+
 ![Deploy produção](docs/prints/06-deploy-producao.png)
 
-**Ambientes no ar**
-![Staging](docs/prints/07-staging-info.png)
-![Produção](docs/prints/08-producao-info.png)
-![Login em produção](docs/prints/09-login-producao.png)
+### Ambientes no ar
 
-**Docker Compose local**
-![Compose](docs/prints/10-docker-compose-local.png)
+Staging (`"environment":"staging"`) e produção (`"environment":"production"`) rodando a mesma versão `e73e8ab`:
+
+![Staging no ar](docs/prints/07-staging-info.png)
+
+![Produção no ar](docs/prints/08-producao-info.png)
+
+Serviços no Render com status **Live**:
+
+![Render staging](docs/prints/10-render-staging.png)
+
+![Render produção](docs/prints/12-render-producao.png)
+
+### Imagem publicada no GitHub Container Registry
+
+A mesma imagem recebe as tags `sha-e73e8ab`, `staging`, `production` e `latest` (build once, deploy many).
+
+![GHCR](docs/prints/11-ghcr-imagem.png)
 
 ---
 

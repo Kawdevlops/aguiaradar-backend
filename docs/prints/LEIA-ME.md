@@ -1,18 +1,18 @@
 # Prints de evidência
 
-Salve aqui as capturas com exatamente estes nomes (o README.md já aponta para eles):
+Execução #2 do pipeline (commit `e73e8ab`).
 
-| Arquivo | O que capturar |
+| Arquivo | O que mostra |
 |---|---|
-| `01-pipeline-visao-geral.png` | Aba **Actions** → execução verde mostrando os 4 jobs encadeados |
-| `02-build-testes.png` | Job "1. Build e testes" aberto + resumo "🧪 Testes automatizados" |
-| `03-docker-smoke.png` | Job "2. Imagem Docker" no passo "Smoke test no container" |
-| `04-deploy-staging.png` | Job "3. Deploy STAGING" com o smoke test aprovado |
-| `05-aprovacao-producao.png` | Tela "Review deployments" pedindo aprovação para production |
-| `06-deploy-producao.png` | Job "4. Deploy PRODUCAO" concluído |
-| `07-staging-info.png` | Navegador em `https://<staging>/actuator/info` (mostra environment=staging e a versão) |
-| `08-producao-info.png` | Navegador em `https://<producao>/actuator/info` (environment=production) |
-| `09-login-producao.png` | Postman/Insomnia fazendo login na URL de produção e recebendo o token |
-| `10-docker-compose-local.png` | Terminal com `docker compose ps` mostrando backend e mongodb **healthy** |
-| `11-ghcr-imagem.png` | Página do pacote no GitHub (Packages) com as tags sha-xxxx, staging, production |
-| `12-render-servicos.png` | Dashboard do Render com os serviços staging e produção "Live" |
+| `01-pipeline-visao-geral.png` | Os 4 jobs do pipeline concluídos com sucesso |
+| `02-build-testes.png` | Job 1: build Maven e testes automatizados |
+| `03-docker-smoke.png` | Job 2: imagem Docker, compose, smoke test e push no GHCR |
+| `04-deploy-staging.png` | Job 3: deploy em staging com smoke test |
+| `05-aprovacao-producao.png` | Aprovação manual do environment `production` e resumo dos testes |
+| `06-deploy-producao.png` | Job 4: deploy em produção com smoke test |
+| `07-staging-info.png` | `/actuator/info` de staging (`environment: staging`, versão `e73e8ab`) |
+| `08-producao-info.png` | `/actuator/info` de produção (`environment: production`, versão `e73e8ab`) |
+| `09-resumo-deploys.png` | Resumo dos deploys e registro da aprovação |
+| `10-render-staging.png` | Serviço de staging Live no Render |
+| `11-ghcr-imagem.png` | Tags da imagem no GitHub Container Registry |
+| `12-render-producao.png` | Serviço de produção Live no Render |
