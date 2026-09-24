@@ -1,0 +1,253 @@
+# =====================================================================
+#  AguiaRadar - Pipeline CI/CD (GitHub Actions)
+#
+#  Pull Request -> main : Build + Testes + Teste do container
+#  Push na main         : tudo acima + publica imagem no GHCR
+#                         + deploy STAGING + smoke test
+#                         + (aprovacao manual) deploy PRODUCAO + smoke test
+#
+#  Principio "build once, deploy many": a MESMA imagem testada em staging
+#  e promovida para producao (nada e recompilado entre os ambientes).
+# =====================================================================
+name: CI/CD AguiaRadar
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  JAVA_VERSION: "17"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: aguiaradar-backend
+
+jobs:
+  # -------------------------------------------------------------------
+  # 1) BUILD + TESTES AUTOMATIZADOS (Maven + JUnit 5 + Mockito)
+  # -------------------------------------------------------------------
+  build-test:
+    name: "1. Build e testes"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout do codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Definir versao e nome da imagem
+        id: meta
+        run: |
+          VERSION="${GITHUB_SHA::7}"
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "image=${REGISTRY}/${OWNER}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar e rodar testes (mvn verify)
+        run: mvn -B -ntp clean verify
+
+      - name: Resumo dos testes
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, xml.etree.ElementTree as ET
+          t=f=e=s=0; linhas=[]
+          for arq in sorted(glob.glob("target/surefire-reports/TEST-*.xml")):
+              r=ET.parse(arq).getroot()
+              ti,fi,ei,si=(int(r.get(k,0)) for k in ("tests","failures","errors","skipped"))
+              t+=ti; f+=fi; e+=ei; s+=si
+              ok="✅" if fi+ei==0 else "❌"
+              linhas.append(f"| {ok} | `{r.get('name').split('.')[-1]}` | {ti} | {fi+ei} | {r.get('time')}s |")
+          print("## 🧪 Testes automatizados\n")
+          print(f"**Total:** {t} &nbsp; **Falhas:** {f+e} &nbsp; **Ignorados:** {s}\n")
+          print("| | Classe | Testes | Falhas | Tempo |\n|---|---|---|---|---|")
+          print("\n".join(linhas))
+          PY
+
+      - name: Publicar relatorios de teste
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorios-testes
+          path: target/surefire-reports/
+
+      - name: Publicar .jar gerado
+        uses: actions/upload-artifact@v4
+        with:
+          name: aguiaradar-backend-jar
+          path: target/aguiaradar-backend.jar
+
+  # -------------------------------------------------------------------
+  # 2) IMAGEM DOCKER: build + teste de integracao com docker compose
+  #    (API + MongoDB reais) + push para o GitHub Container Registry
+  # -------------------------------------------------------------------
+  docker:
+    name: "2. Imagem Docker + teste do container"
+    runs-on: ubuntu-latest
+    needs: build-test
+    env:
+      VERSION: ${{ needs.build-test.outputs.version }}
+      IMAGE: ${{ needs.build-test.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preparar Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build da imagem
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          build-args: APP_VERSION=${{ env.VERSION }}
+          tags: |
+            ${{ env.IMAGE }}:sha-${{ env.VERSION }}
+            aguiaradar-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Subir ambiente de teste (API + MongoDB) com docker compose
+        run: |
+          cp .env.example .env
+          sed -i "s/^APP_VERSION=.*/APP_VERSION=${VERSION}/; s/^APP_ENV=.*/APP_ENV=ci/" .env
+          echo "APP_IMAGE=aguiaradar-backend:ci" >> .env
+          docker compose up -d --no-build --wait --wait-timeout 180
+          docker compose ps
+
+      - name: Smoke test no container
+        run: bash scripts/smoke-test.sh http://localhost:8080 "${VERSION}"
+
+      - name: Logs dos containers (em caso de falha)
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Derrubar ambiente de teste
+        if: always()
+        run: docker compose down -v
+
+      - name: Login no GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar imagem (ghcr.io)
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "${IMAGE}:sha-${VERSION}"
+          echo "### 🐳 Imagem publicada" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${IMAGE}:sha-${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------
+  # 3) DEPLOY EM STAGING (automatico a cada push na main)
+  # -------------------------------------------------------------------
+  deploy-staging:
+    name: "3. Deploy STAGING"
+    runs-on: ubuntu-latest
+    needs: [build-test, docker]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      url: ${{ vars.APP_URL }}
+    concurrency: deploy-staging
+    env:
+      VERSION: ${{ needs.build-test.outputs.version }}
+      IMAGE: ${{ needs.build-test.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Marcar imagem como "staging"
+        run: docker buildx imagetools create -t "${IMAGE}:staging" "${IMAGE}:sha-${VERSION}"
+
+      - name: Disparar deploy no Render (staging)
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error::Secret RENDER_DEPLOY_HOOK nao configurado no environment 'staging'. Veja o README."
+            exit 1
+          fi
+          curl -fsS -G "$DEPLOY_HOOK" --data-urlencode "imgURL=${IMAGE}:sha-${VERSION}"
+          echo
+
+      - name: Smoke test em staging
+        run: bash scripts/smoke-test.sh "${{ vars.APP_URL }}" "${VERSION}"
+
+      - name: Resumo
+        run: |
+          echo "## 🟡 Staging atualizado" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Versao: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${{ vars.APP_URL }}/actuator/info" >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------
+  # 4) DEPLOY EM PRODUCAO (so depois de staging OK + aprovacao manual
+  #    configurada nas "Protection rules" do environment production)
+  # -------------------------------------------------------------------
+  deploy-production:
+    name: "4. Deploy PRODUCAO"
+    runs-on: ubuntu-latest
+    needs: [build-test, deploy-staging]
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    concurrency: deploy-production
+    env:
+      VERSION: ${{ needs.build-test.outputs.version }}
+      IMAGE: ${{ needs.build-test.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promover a mesma imagem para "production" e "latest"
+        run: |
+          docker buildx imagetools create \
+            -t "${IMAGE}:production" -t "${IMAGE}:latest" \
+            "${IMAGE}:sha-${VERSION}"
+
+      - name: Disparar deploy no Render (producao)
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error::Secret RENDER_DEPLOY_HOOK nao configurado no environment 'production'. Veja o README."
+            exit 1
+          fi
+          curl -fsS -G "$DEPLOY_HOOK" --data-urlencode "imgURL=${IMAGE}:sha-${VERSION}"
+          echo
+
+      - name: Smoke test em producao
+        run: bash scripts/smoke-test.sh "${{ vars.APP_URL }}" "${VERSION}"
+
+      - name: Resumo
+        run: |
+          echo "## 🟢 Producao atualizada" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Versao: \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- URL: ${{ vars.APP_URL }}/actuator/info" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,16 @@
+# Perfil de PRODUCAO
+# Log enxuto e sem detalhes internos expostos no health.
+logging:
+  level:
+    root: WARN
+    br.com.fiap.aguiaradar: INFO
+
+management:
+  endpoint:
+    health:
+      show-details: never
+
+server:
+  error:
+    include-stacktrace: never
+    include-message: never

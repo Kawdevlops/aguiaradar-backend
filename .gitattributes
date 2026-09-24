@@ -1,0 +1,2 @@
+# Garante quebra de linha Linux nos scripts (evita erro ao commitar pelo Windows)
+*.sh text eol=lf

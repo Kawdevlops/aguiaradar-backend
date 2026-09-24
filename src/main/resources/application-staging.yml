@@ -1,0 +1,11 @@
+# Perfil de HOMOLOGACAO (staging)
+# Mais log para investigar problemas antes de promover para producao.
+logging:
+  level:
+    br.com.fiap.aguiaradar: DEBUG
+    org.springframework.web: INFO
+
+management:
+  endpoint:
+    health:
+      show-details: always

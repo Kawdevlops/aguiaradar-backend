@@ -1,0 +1,10 @@
+target/
+*.class
+.idea/
+*.iml
+.vscode/
+.DS_Store
+# variaveis de ambiente reais (so os *.example vao para o Git)
+.env
+.env.staging
+.env.production

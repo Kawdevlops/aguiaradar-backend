@@ -1,0 +1,70 @@
+# =====================================================================
+#  AguiaRadar - orquestracao local (API + MongoDB)
+#
+#  Desenvolvimento:   docker compose up -d --build
+#  Staging local:     docker compose -p aguiaradar-staging --env-file .env.staging up -d
+#  Producao local:    docker compose -p aguiaradar-prod    --env-file .env.production up -d
+#  (o -p cria containers, rede e volume separados para cada ambiente)
+# =====================================================================
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-aguiaradar}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-aguiaradar123}
+      MONGO_INITDB_DATABASE: ${MONGO_DB:-aguiaradar}
+    ports:
+      # Exposto so para inspecao (Compass). Em producao pode ser removido.
+      - "${MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  backend:
+    image: ${APP_IMAGE:-aguiaradar-backend:local}
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-local}
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy   # so sobe a API quando o banco estiver pronto
+    ports:
+      - "${APP_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      APP_ENV: ${APP_ENV:-local}
+      APP_VERSION: ${APP_VERSION:-local}
+      MONGODB_URI: mongodb://${MONGO_USER:-aguiaradar}:${MONGO_PASSWORD:-aguiaradar123}@mongodb:27017/${MONGO_DB:-aguiaradar}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?defina JWT_SECRET no arquivo .env}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-86400000}
+      SEED_ENABLED: ${SEED_ENABLED:-true}
+      IA_ENABLED: ${IA_ENABLED:-true}
+      IA_API_KEY: ${IA_API_KEY:-}
+      IA_PROVIDER_URL: ${IA_PROVIDER_URL:-https://openrouter.ai/api/v1/chat/completions}
+      IA_MODEL: ${IA_MODEL:-meta-llama/llama-3.1-8b-instruct:free}
+    networks:
+      - backend-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health | grep -q UP"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+networks:
+  backend-net:
+    driver: bridge
+
+volumes:
+  mongo_data:
