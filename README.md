@@ -1,313 +1,253 @@
 # Projeto - Cidades ESG Inteligentes · AguiaRadar
 
-> **Integrantes:** _Douglas Ferreira Giatti (565712)_ · _Eduardo de Araujo Favaron (561769)_ · _Lorena Santos Comar (566420)_ · _Kauany Soares Rodrigues Violin (564605)_ · _Marcos Pelizari (564883)_
+[![CI/CD](https://github.com/Kawdevlops/aguiaradar-backend/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/Kawdevlops/aguiaradar-backend/actions/workflows/ci-cd.yml)
+![Java](https://img.shields.io/badge/Java-17-007396?logo=openjdk&logoColor=white)
+![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3-6DB33F?logo=springboot&logoColor=white)
+![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?logo=mongodb&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-O **AguiaRadar** é o backend (Java 17 + Spring Boot 3.3 + MongoDB) de uma plataforma de inovação voltada a ESG: colaboradores cadastram ideias, gestores as avaliam e priorizam (com apoio de IA) e a liderança acompanha projetos e indicadores (ROI, investimento, produtividade) em dashboards. Nesta fase o projeto recebeu práticas completas de DevOps: containerização, orquestração com Docker Compose e um pipeline de CI/CD no GitHub Actions com deploy automatizado em **staging** e **produção**.
+Backend da plataforma **AguiaRadar**, voltada à gestão de inovação com foco em ESG. Colaboradores cadastram ideias, gestores avaliam e priorizam com apoio de IA, e a liderança acompanha projetos e indicadores de retorno. O projeto aplica práticas de DevOps de ponta a ponta: containerização, orquestração com Docker Compose e pipeline de CI/CD com deploy automatizado em staging e produção.
 
-```mermaid
-flowchart LR
-    dev([git push main]) --> A[1. Build e testes<br/>Maven + JUnit]
-    A --> B[2. Imagem Docker<br/>compose + smoke test<br/>push ghcr.io]
-    B --> C[3. Deploy STAGING<br/>Render + smoke test]
-    C --> R{{Aprovação manual}}
-    R --> D[4. Deploy PRODUÇÃO<br/>mesma imagem + smoke test]
-    pr([Pull Request]) -.-> A
-```
-
----
-
-## Como executar localmente com Docker
-
-**Pré-requisitos:** Docker Desktop (ou Docker Engine) com Docker Compose v2.
-
-```bash
-# 1. Clonar e entrar na pasta
-git clone https://github.com/Kawdevlops/aguiaradar-backend.git
-cd aguiaradar-backend
-
-# 2. Criar o arquivo de variáveis a partir do modelo
-cp .env.example .env          # Windows (PowerShell): copy .env.example .env
-
-# 3. Subir API + MongoDB (o --wait só libera quando os dois estiverem "healthy")
-docker compose up -d --build --wait
-
-# 4. Conferir
-docker compose ps
-curl http://localhost:8080/actuator/health     # {"status":"UP",...}
-curl http://localhost:8080/actuator/info       # ambiente e versão
-./scripts/smoke-test.sh http://localhost:8080  # login + rota protegida
-```
-
-A API fica em `http://localhost:8080`. Usuários de demonstração criados automaticamente: `operador@aguiaradar.com`, `gestor@aguiaradar.com` e `lideranca@aguiaradar.com`, todos com a senha `123456`.
-
-Comandos úteis:
-
-```bash
-docker compose logs -f backend   # acompanhar logs da API
-docker compose down              # parar (mantém os dados no volume)
-docker compose down -v           # parar e apagar os dados do MongoDB
-```
-
-### Simulando staging e produção na própria máquina
-
-O mesmo `docker-compose.yml` sobe ambientes isolados (containers, rede e volume próprios) apenas trocando o arquivo de variáveis:
-
-```bash
-cp .env.staging.example .env.staging
-cp .env.production.example .env.production
-
-docker compose -p aguiaradar-staging --env-file .env.staging    up -d --build --wait   # porta 8081
-docker compose -p aguiaradar-prod    --env-file .env.production up -d --build --wait   # porta 8082
-
-curl http://localhost:8081/actuator/info   # "environment":"staging"
-curl http://localhost:8082/actuator/info   # "environment":"production"
-```
-
----
-
-## Pipeline CI/CD
-
-**Ferramentas:** GitHub Actions (orquestração do pipeline), Maven (build e testes), Docker Buildx (imagem), GitHub Container Registry – GHCR (registro das imagens), Render (hospedagem dos ambientes staging e produção), MongoDB Atlas (banco gerenciado de cada ambiente) e GitHub Environments (segredos por ambiente e aprovação manual).
-
-O arquivo está em [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
-
-| # | Job | Quando roda | O que faz |
-|---|-----|-------------|-----------|
-| 1 | **Build e testes** | PR e push na `main` | Instala o JDK 17 com cache do Maven, executa `mvn clean verify` (compilação + testes JUnit 5/Mockito), gera um resumo dos testes na página da execução e publica os relatórios e o `.jar` como artefatos. |
-| 2 | **Imagem Docker + teste do container** | PR e push na `main` | Constrói a imagem (com cache), sobe **API + MongoDB reais** com `docker compose --wait` e roda o `scripts/smoke-test.sh` (health, versão, login JWT, rota protegida com e sem token). Em push na `main`, publica a imagem em `ghcr.io/kawdevlops/aguiaradar-backend:sha-<commit>`. |
-| 3 | **Deploy STAGING** | Push na `main` | Marca a imagem com a tag `staging`, dispara o *deploy hook* do Render passando a imagem exata do commit e aguarda até que `/actuator/info` responda com a nova versão; em seguida roda o smoke test na URL pública. |
-| 4 | **Deploy PRODUÇÃO** | Após staging OK + **aprovação manual** | Promove **a mesma imagem** já validada (tags `production` e `latest`), dispara o deploy hook de produção e roda o smoke test. |
-
-Lógica e decisões:
-
-- **Build once, deploy many:** a imagem é gerada uma única vez e promovida entre ambientes, então o que chega em produção é exatamente o que foi testado em staging.
-- **Portões de qualidade:** cada job depende do anterior (`needs`); se um teste falhar, nada é publicado nem implantado. Pull Requests executam só as etapas 1 e 2, servindo como validação antes do merge.
-- **Verificação real do deploy:** o pipeline não considera o deploy concluído ao apenas chamar o Render; ele espera o `/actuator/info` retornar a versão (SHA do commit) recém-publicada e só então testa login e rotas.
-- **Segredos fora do código:** `RENDER_DEPLOY_HOOK` fica em *secrets* de cada GitHub Environment; `MONGODB_URI` e `JWT_SECRET` ficam nas variáveis de ambiente do Render. O repositório só contém arquivos `*.example`.
-- **Aprovação para produção:** o environment `production` tem *Required reviewers*, então o job 4 pausa até alguém aprovar no GitHub.
-- `concurrency` impede dois deploys simultâneos no mesmo ambiente.
-
-### Configuração do deploy (feita uma única vez)
-
-1. **MongoDB Atlas (gratuito):** crie um cluster M0, um usuário de banco e libere `0.0.0.0/0` em *Network Access*. Copie a connection string e use dois bancos diferentes: `.../aguiaradar_staging` e `.../aguiaradar_prod`.
-2. **Primeiro push:** envie o projeto para o GitHub. Os jobs 1 e 2 passam e publicam a imagem no GHCR (o job 3 falha porque ainda não há segredos — é esperado). Em *Seu perfil → Packages → aguiaradar-backend → Package settings*, mude a visibilidade para **Public** para que o Render consiga baixar a imagem.
-3. **Render (gratuito):** crie dois *Web Services* do tipo **Existing Image** com `ghcr.io/kawdevlops/aguiaradar-backend:staging` e `...:production`, plano Free, e configure as variáveis:
-
-   | Variável | Staging | Produção |
-   |---|---|---|
-   | `SPRING_PROFILES_ACTIVE` | `staging` | `prod` |
-   | `APP_ENV` | `staging` | `production` |
-   | `PORT` | `8080` | `8080` |
-   | `MONGODB_URI` | URI do Atlas `/aguiaradar_staging` | URI do Atlas `/aguiaradar_prod` |
-   | `JWT_SECRET` | `openssl rand -base64 48` | outro valor, diferente do staging |
-   | `SEED_ENABLED` | `true` | `true` |
-
-   Em *Settings*, defina *Health Check Path* = `/actuator/health` e copie o **Deploy Hook** de cada serviço.
-4. **GitHub → Settings → Environments:** crie `staging` e `production`. Em cada um, adicione o secret `RENDER_DEPLOY_HOOK` (hook do serviço correspondente) e a variable `APP_URL` (ex.: `https://aguiaradar-staging.onrender.com`). No `production`, marque **Required reviewers** com seu usuário.
-5. Em *Actions → CI/CD AguiaRadar → Run workflow* (ou num novo push), o pipeline completo roda até produção.
-
-> No plano gratuito o Render "adormece" o serviço após inatividade; o smoke test espera até 10 minutos para cobrir o tempo de inicialização.
-
----
-
-## Containerização
-
-### Dockerfile
-
-```dockerfile
-# syntax=docker/dockerfile:1.7
-# =====================================================================
-#  AguiaRadar Backend - Dockerfile multi-stage
-#  Estagio 1 (build): compila com Maven + JDK 17
-#  Estagio 2 (runtime): so o JRE 17 + o .jar (imagem pequena e segura)
-# =====================================================================
-
-# ---------- Estagio 1: build ----------
-FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /app
-
-# Copia so o pom primeiro: se o pom nao mudar, o Docker reaproveita
-# a camada de dependencias (build muito mais rapido)
-COPY pom.xml .
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q dependency:go-offline
-
-COPY src ./src
-# Os testes rodam no pipeline (job "build-test"); aqui so empacotamos
-RUN --mount=type=cache,target=/root/.m2 mvn -B -q clean package -DskipTests
-
-# ---------- Estagio 2: runtime ----------
-FROM eclipse-temurin:17-jre-alpine AS runtime
-
-LABEL org.opencontainers.image.title="aguiaradar-backend" \
-      org.opencontainers.image.description="AguiaRadar - Cidades ESG Inteligentes (Spring Boot + MongoDB)" \
-      org.opencontainers.image.licenses="MIT"
-
-WORKDIR /app
-
-# Usuario sem privilegios de root (boa pratica de seguranca)
-RUN addgroup -S app && adduser -S app -G app
-COPY --from=build --chown=app:app /app/target/aguiaradar-backend.jar app.jar
-USER app
-
-# Versao gravada na imagem (o pipeline passa o SHA do commit)
-ARG APP_VERSION=dev
-ENV APP_VERSION=${APP_VERSION} \
-    PORT=8080 \
-    JAVA_OPTS="-XX:MaxRAMPercentage=60 -XX:+UseContainerSupport -Djava.security.egd=file:/dev/./urandom"
-
-EXPOSE 8080
-
-# O Docker marca o container como "healthy" so quando a API responde
-HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
-  CMD wget -qO- "http://localhost:${PORT}/actuator/health" | grep -q '"UP"' || exit 1
-
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar"]
-```
-
-Estratégias adotadas:
-
-- **Multi-stage build:** o estágio `build` usa a imagem do Maven com JDK para compilar; o estágio final usa só `eclipse-temurin:17-jre-alpine` com o `.jar`. A imagem final não carrega Maven, código-fonte nem JDK, ficando bem menor e com menos superfície de ataque.
-- **Cache de camadas:** o `pom.xml` é copiado antes do `src/` e as dependências são baixadas numa camada própria (com `--mount=type=cache`), então alterações só no código não baixam tudo de novo. No pipeline, o cache do Buildx é guardado no GitHub Actions (`type=gha`).
-- **Usuário não-root:** a aplicação roda como usuário `app`, sem privilégios.
-- **Healthcheck:** o Docker consulta `/actuator/health`; o Compose usa isso para só iniciar a API depois do MongoDB estar pronto e o pipeline usa `--wait` para aguardar o estado *healthy*.
-- **Configuração por ambiente:** nada de senha ou URL fixa na imagem; tudo vem de variáveis (`MONGODB_URI`, `JWT_SECRET`, `SPRING_PROFILES_ACTIVE`, `PORT`...). A versão (SHA do commit) é gravada na imagem via `ARG APP_VERSION` e exposta em `/actuator/info`.
-- **JVM ciente do container:** `-XX:MaxRAMPercentage=60` limita o heap à memória do container (importante no plano de 512 MB do Render).
-- **`.dockerignore`:** evita enviar `target/`, `.git/`, `.env` e documentação para o contexto de build.
-
-### Orquestração (docker-compose.yml)
-
-| Recurso | Como foi usado |
+| Ambiente | Endereço |
 |---|---|
-| **Serviços** | `backend` (imagem da aplicação) e `mongodb` (`mongo:7` com usuário/senha root). |
-| **Rede** | `backend-net` (bridge): a API acessa o banco pelo nome `mongodb`, sem depender de IP. |
-| **Volume** | `mongo_data` montado em `/data/db`, os dados sobrevivem a `docker compose down`. |
-| **Variáveis de ambiente** | Lidas do `.env` (modelo em `.env.example`), com valores padrão e `JWT_SECRET` obrigatório (`${JWT_SECRET:?...}`). |
-| **Dependência saudável** | `depends_on: condition: service_healthy` → a API só sobe com o Mongo respondendo ao `ping`. |
-| **Healthchecks** | Nos dois serviços; permitem `docker compose up --wait`. |
-| **Multiambiente** | `-p` + `--env-file` criam stacks isoladas de staging (8081) e produção (8082) com o mesmo arquivo. |
+| Staging | [aguiaradar-backend-staging.onrender.com](https://aguiaradar-backend-staging.onrender.com/actuator/info) |
+| Produção | [aguiaradar-producao.onrender.com](https://aguiaradar-producao.onrender.com/actuator/info) |
+| Pipeline | [GitHub Actions](https://github.com/Kawdevlops/aguiaradar-backend/actions) |
+| Imagem Docker | `ghcr.io/kawdevlops/aguiaradar-backend` |
 
----
+## Integrantes
 
-## Prints do funcionamento
-
-Evidências da execução **#2** do pipeline (commit `e73e8ab`), com deploy em staging e produção. Todos os arquivos estão em [`docs/prints/`](docs/prints/).
-
-**Links dos ambientes**
-
-| Ambiente | URL |
+| Nome | RM |
 |---|---|
-| Staging | https://aguiaradar-backend-staging.onrender.com/actuator/info |
-| Produção | https://aguiaradar-producao.onrender.com/actuator/info |
-| Pipeline (GitHub Actions) | https://github.com/Kawdevlops/aguiaradar-backend/actions |
-| Imagem Docker (GHCR) | `ghcr.io/kawdevlops/aguiaradar-backend` |
+| Douglas Ferreira Giatti | 565712 |
+| Eduardo de Araujo Favaron | 561769 |
+| Lorena Santos Comar | 566420 |
+| Kauany Soares Rodrigues Violin | 564605 |
+| Marcos Pelizari | 564883 |
 
-> Os serviços estão no plano gratuito do Render e "dormem" sem uso: o primeiro acesso pode levar cerca de 2 minutos para responder.
+## Sumário
 
-### Pipeline completo
+- [Sobre a aplicação](#sobre-a-aplicação)
+- [Como executar localmente com Docker](#como-executar-localmente-com-docker)
+- [Pipeline CI/CD](#pipeline-cicd)
+- [Containerização](#containerização)
+- [Prints do funcionamento](#prints-do-funcionamento)
+- [Tecnologias utilizadas](#tecnologias-utilizadas)
+- [Estrutura do projeto](#estrutura-do-projeto)
 
-Os 4 jobs concluídos com sucesso: build e testes → imagem Docker → deploy staging → deploy produção.
+## Sobre a aplicação
 
-![Pipeline completo](docs/prints/01-pipeline-visao-geral.png)
+API REST stateless com autenticação JWT e três perfis de acesso:
 
-Resumo gerado pelo próprio pipeline: mesma versão `e73e8ab` em staging e produção e aprovação manual registrada.
-
-![Resumo dos deploys](docs/prints/09-resumo-deploys.png)
-
-### Build e testes automatizados
-
-Compilação com Maven e execução dos testes (15 testes, 0 falhas).
-
-![Build e testes](docs/prints/02-build-testes.png)
-
-### Imagem Docker e teste do container
-
-Build da imagem, subida de API + MongoDB com Docker Compose, smoke test e publicação no GHCR.
-
-![Imagem Docker](docs/prints/03-docker-smoke.png)
-
-### Deploy em staging
-
-![Deploy staging](docs/prints/04-deploy-staging.png)
-
-### Aprovação manual e deploy em produção
-
-A produção só é implantada após aprovação no GitHub Environment `production`. A tela também mostra o resumo dos testes automatizados.
-
-![Aprovação para produção](docs/prints/05-aprovacao-producao.png)
-
-![Deploy produção](docs/prints/06-deploy-producao.png)
-
-### Ambientes no ar
-
-Staging (`"environment":"staging"`) e produção (`"environment":"production"`) rodando a mesma versão `e73e8ab`:
-
-![Staging no ar](docs/prints/07-staging-info.png)
-
-![Produção no ar](docs/prints/08-producao-info.png)
-
-Serviços no Render com status **Live**:
-
-![Render staging](docs/prints/10-render-staging.png)
-
-![Render produção](docs/prints/12-render-producao.png)
-
-### Imagem publicada no GitHub Container Registry
-
-A mesma imagem recebe as tags `sha-e73e8ab`, `staging`, `production` e `latest` (build once, deploy many).
-
-![GHCR](docs/prints/11-ghcr-imagem.png)
-
----
-
-## Tecnologias utilizadas
-
-**Aplicação:** Java 17, Spring Boot 3.3 (Web, Security, Validation, Actuator), Spring Data MongoDB, JWT (JJWT 0.12), Lombok, integração com IA via OpenRouter (API compatível com OpenAI) com fallback heurístico local.
-
-**Banco de dados:** MongoDB 7 (local em container) e MongoDB Atlas (staging e produção).
-
-**Testes:** JUnit 5, Mockito, AssertJ, Spring Security Test e smoke test em shell (`scripts/smoke-test.sh`).
-
-**DevOps:** Git e GitHub, GitHub Actions, GitHub Environments (segredos e aprovação), Docker (multi-stage), Docker Compose v2, Docker Buildx, GitHub Container Registry (GHCR), Render (hospedagem dos containers), Maven.
-
----
-
-## Estrutura do projeto
-
-```text
-AguiaRadar-Backend/
-├── .github/workflows/ci-cd.yml   # pipeline CI/CD
-├── Dockerfile                    # imagem multi-stage
-├── .dockerignore
-├── docker-compose.yml            # API + MongoDB (rede, volume, healthchecks)
-├── .env.example                  # variáveis (dev)
-├── .env.staging.example          # variáveis (staging local)
-├── .env.production.example       # variáveis (produção local)
-├── scripts/smoke-test.sh         # teste pós-deploy
-├── test-api.sh                   # teste manual de endpoints
-├── docs/prints/                  # evidências
-├── pom.xml
-├── README.md
-└── src/
-    ├── main/java/br/com/fiap/aguiaradar/   # config, controller, dto, model, repository, security, service
-    ├── main/resources/application*.yml     # perfis dev, staging e prod
-    └── test/java/...                       # testes automatizados
-```
-
-## Sobre a API
-
-Perfis de acesso: `OPERADOR` (cadastra as próprias ideias), `GESTOR` (avalia/prioriza ideias e gerencia projetos) e `LIDERANCA` (orientações estratégicas, acompanhamento e insights de IA). Autenticação stateless com JWT (`Authorization: Bearer <token>`) e senhas com BCrypt.
+| Perfil | Responsabilidade |
+|---|---|
+| `OPERADOR` | Cadastra e acompanha as próprias ideias |
+| `GESTOR` | Avalia e prioriza ideias, gerencia projetos |
+| `LIDERANCA` | Define orientações estratégicas e acompanha indicadores |
 
 | Recurso | Endpoints principais |
 |---|---|
-| Autenticação | `POST /api/v1/auth/login` (público), `POST /api/v1/auth/registrar` (LIDERANCA) |
+| Autenticação | `POST /api/v1/auth/login`, `POST /api/v1/auth/registrar` |
 | Orientações estratégicas | `GET/POST /api/v1/orientacoes-estrategicas`, `GET/PUT/DELETE /{id}` |
 | Ideias | `GET/POST /api/v1/ideias`, `GET /minhas`, `PUT /{id}/avaliar`, `PUT /{id}/priorizar` |
 | Projetos | `GET/POST /api/v1/projetos`, `PUT /{id}`, `PATCH /{id}/resultados` |
 | Dashboard | `GET /api/v1/dashboard/resumo-geral`, `/por-estrategia`, `/insight-ia` |
 | IA | `POST /api/v1/ia/priorizar-ideias`, `POST /api/v1/ia/ideias/{id}/pontuar` |
-| Observabilidade | `GET /actuator/health`, `GET /actuator/info` (públicos) |
+| Observabilidade | `GET /actuator/health`, `GET /actuator/info` |
 
-Testes automatizados (`mvn test`, sem precisar de MongoDB): `JwtServiceTest`, `AuthServiceTest`, `OrientacaoEstrategicaServiceTest` e `IAServiceTest`.
+## Como executar localmente com Docker
 
----
+**Pré-requisitos:** Docker com Docker Compose v2.
 
+```bash
+git clone https://github.com/Kawdevlops/aguiaradar-backend.git
+cd aguiaradar-backend
+cp .env.example .env
+docker compose up -d --build --wait
+```
+
+A API fica disponível em `http://localhost:8080`. Para validar:
+
+```bash
+docker compose ps
+curl http://localhost:8080/actuator/health
+bash scripts/smoke-test.sh http://localhost:8080
+```
+
+Usuários de demonstração criados na inicialização (senha `123456`):
+
+| E-mail | Perfil |
+|---|---|
+| `operador@aguiaradar.com` | OPERADOR |
+| `gestor@aguiaradar.com` | GESTOR |
+| `lideranca@aguiaradar.com` | LIDERANCA |
+
+Para encerrar, use `docker compose down` (mantém os dados) ou `docker compose down -v` (remove o volume do banco).
+
+### Staging e produção locais
+
+O mesmo `docker-compose.yml` cria ambientes isolados, cada um com containers, rede e volume próprios:
+
+```bash
+cp .env.staging.example .env.staging
+cp .env.production.example .env.production
+docker compose -p aguiaradar-staging --env-file .env.staging up -d --build --wait
+docker compose -p aguiaradar-prod --env-file .env.production up -d --build --wait
+```
+
+| Ambiente | Porta | `/actuator/info` |
+|---|---|---|
+| Staging | 8081 | `"environment":"staging"` |
+| Produção | 8082 | `"environment":"production"` |
+
+## Pipeline CI/CD
+
+Implementado com **GitHub Actions** em [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml). As imagens são publicadas no **GitHub Container Registry** e os ambientes rodam no **Render**, com banco no **MongoDB Atlas**.
+
+```mermaid
+flowchart LR
+    A[Build e testes] --> B[Imagem Docker<br/>e smoke test]
+    B --> C[Deploy staging]
+    C --> R{{Aprovação manual}}
+    R --> D[Deploy produção]
+```
+
+| Job | Gatilho | Execução |
+|---|---|---|
+| 1. Build e testes | Pull request e push na `main` | `mvn clean verify` com JDK 17, testes JUnit 5 e Mockito, relatórios e `.jar` publicados como artefatos |
+| 2. Imagem Docker | Pull request e push na `main` | Build da imagem, API e MongoDB reais via `docker compose --wait`, smoke test e push para o GHCR com a tag `sha-<commit>` |
+| 3. Deploy staging | Push na `main` | Tag `staging`, deploy no Render via deploy hook e smoke test na URL pública |
+| 4. Deploy produção | Aprovação no environment `production` | Promoção da mesma imagem (`production` e `latest`), deploy no Render e smoke test |
+
+**Decisões de projeto**
+
+- **Build once, deploy many:** a imagem é gerada uma única vez e promovida entre ambientes; produção recebe exatamente o que foi validado em staging.
+- **Portões de qualidade:** cada job depende do anterior; uma falha interrompe a cadeia antes de qualquer deploy.
+- **Verificação real do deploy:** o smoke test aguarda `/actuator/info` reportar a versão recém-publicada e então valida health, login JWT e rotas protegidas.
+- **Aprovação manual:** o environment `production` exige revisor antes do deploy.
+- **Segredos isolados:** deploy hooks em GitHub Environments; credenciais do banco e do JWT nas variáveis do Render. O repositório contém apenas arquivos `.env.example`.
+
+A configuração dos serviços externos está documentada em [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+## Containerização
+
+### Dockerfile
+
+[`Dockerfile`](Dockerfile) multi-stage:
+
+| Estágio | Imagem base | Responsabilidade |
+|---|---|---|
+| `build` | `maven:3.9-eclipse-temurin-17` | Resolve dependências em camada cacheada e empacota o `.jar` |
+| `runtime` | `eclipse-temurin:17-jre-alpine` | Executa o `.jar` com usuário sem privilégios |
+
+**Estratégias adotadas**
+
+- Imagem final apenas com JRE e o artefato, sem Maven, JDK ou código-fonte.
+- `pom.xml` copiado antes do código para reaproveitar a camada de dependências; cache do BuildKit localmente e cache `gha` no pipeline.
+- Execução com usuário `app`, sem privilégios de root.
+- `HEALTHCHECK` em `/actuator/health`.
+- `-XX:MaxRAMPercentage=60` para respeitar o limite de memória do container.
+- Versão (SHA do commit) gravada via `ARG APP_VERSION` e exposta em `/actuator/info`.
+- `.dockerignore` excluindo `target/`, `.git/`, `.env` e documentação do contexto de build.
+
+### Docker Compose
+
+| Recurso | Configuração |
+|---|---|
+| Serviços | `backend` e `mongodb` (`mongo:7` com autenticação) |
+| Rede | `backend-net` (bridge), comunicação pelo nome do serviço |
+| Volume | `mongo_data` persistindo `/data/db` |
+| Dependência | `depends_on` com `condition: service_healthy` |
+| Healthchecks | API (`/actuator/health`) e MongoDB (`ping`) |
+| Variáveis | Lidas do `.env`, com `JWT_SECRET` obrigatório |
+
+### Variáveis de ambiente
+
+| Variável | Descrição |
+|---|---|
+| `SPRING_PROFILES_ACTIVE` | Perfil Spring: `dev`, `staging` ou `prod` |
+| `APP_ENV` | Nome do ambiente exposto em `/actuator/info` |
+| `APP_VERSION` | Versão da aplicação (definida no build pelo pipeline) |
+| `PORT` | Porta HTTP (padrão `8080`) |
+| `MONGODB_URI` | String de conexão do MongoDB |
+| `JWT_SECRET` | Chave Base64 de no mínimo 32 bytes |
+| `SEED_ENABLED` | Cria dados de demonstração na inicialização |
+| `IA_API_KEY`, `IA_MODEL`, `IA_PROVIDER_URL`, `IA_ENABLED` | Integração opcional com provedor de IA |
+
+## Prints do funcionamento
+
+Execução **#2** do pipeline, commit `e73e8ab`.
+
+**Pipeline completo**
+
+![Pipeline completo](docs/prints/01-pipeline-visao-geral.png)
+
+![Resumo dos deploys](docs/prints/09-resumo-deploys.png)
+
+**Build e testes automatizados** (15 testes, 0 falhas)
+
+![Build e testes](docs/prints/02-build-testes.png)
+
+**Imagem Docker e teste do container**
+
+![Imagem Docker](docs/prints/03-docker-smoke.png)
+
+**Deploy em staging**
+
+![Deploy staging](docs/prints/04-deploy-staging.png)
+
+**Aprovação e deploy em produção**
+
+![Aprovação para produção](docs/prints/05-aprovacao-producao.png)
+
+![Deploy produção](docs/prints/06-deploy-producao.png)
+
+**Ambientes em execução** (mesma versão `e73e8ab`)
+
+![Staging](docs/prints/07-staging-info.png)
+
+![Produção](docs/prints/08-producao-info.png)
+
+![Render staging](docs/prints/10-render-staging.png)
+
+![Render produção](docs/prints/12-render-producao.png)
+
+**Imagem no GitHub Container Registry**
+
+![GHCR](docs/prints/11-ghcr-imagem.png)
+
+## Tecnologias utilizadas
+
+| Categoria | Tecnologias |
+|---|---|
+| Linguagem e framework | Java 17, Spring Boot 3.3 (Web, Security, Validation, Actuator), Spring Data MongoDB |
+| Segurança | JWT (JJWT 0.12), BCrypt |
+| Banco de dados | MongoDB 7 (local), MongoDB Atlas (staging e produção) |
+| Testes | JUnit 5, Mockito, AssertJ, Spring Security Test, smoke test em shell |
+| Containers | Docker (multi-stage, BuildKit), Docker Compose v2 |
+| CI/CD | GitHub Actions, GitHub Environments, GitHub Container Registry |
+| Hospedagem | Render |
+| Build | Maven |
+| IA | OpenRouter (API compatível com OpenAI), com fallback heurístico |
+
+## Estrutura do projeto
+
+```text
+aguiaradar-backend/
+├── .github/workflows/ci-cd.yml
+├── Dockerfile
+├── .dockerignore
+├── docker-compose.yml
+├── .env.example
+├── .env.staging.example
+├── .env.production.example
+├── scripts/smoke-test.sh
+├── docs/
+│   ├── DEPLOY.md
+│   └── prints/
+├── pom.xml
+└── src/
+    ├── main/java/br/com/fiap/aguiaradar/
+    ├── main/resources/
+    └── test/java/br/com/fiap/aguiaradar/
+```
